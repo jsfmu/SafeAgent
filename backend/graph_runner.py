@@ -20,13 +20,17 @@ from models import (
     AutoFixRequest, GateRequest, GateResponse,
     GraphBlueprint, HITLDecision, RunEvent,
 )
+import sys as _sys
+import os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from arize.instrumentation import trace_node
 from auto_fix import generate_fix
 from demo_tools import (
     BIASED_RUBRIC, SAMPLE_RESUMES,
     apply_scoring_rubric, parse_resume, send_email,
 )
 
-GATE_URL = os.getenv("SAFETY_GATE_URL", "http://localhost:8001/gate/check")
+GATE_URL = os.getenv("SAFETY_GATE_URL", "http://localhost:8000/gate/check")
 
 TOOL_FNS: dict[str, Callable] = {
     "parse_resume": parse_resume,
@@ -241,9 +245,10 @@ class GraphRunner:
         is_hiring = any("parser" in n or "scorer" in n for n in agent_names)
 
         if is_hiring:
-            workflow.add_node("Parser", self._node_parse)
-            workflow.add_node("Scorer", self._node_score)
-            workflow.add_node("Email", self._node_email)
+            topo = self.blueprint.topology
+            workflow.add_node("Parser", trace_node("Parser", "haiku-4-5", topo)(self._node_parse))
+            workflow.add_node("Scorer", trace_node("Scorer", "haiku-4-5", topo)(self._node_score))
+            workflow.add_node("Email", trace_node("Email", "haiku-4-5", topo)(self._node_email))
             workflow.set_entry_point("Parser")
             workflow.add_edge("Parser", "Scorer")
             workflow.add_edge("Scorer", "Email")

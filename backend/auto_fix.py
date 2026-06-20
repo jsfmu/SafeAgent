@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Sonnet 4.6 auto-fix generator — produces safer tool params after a gate block."""
 from claude_client import SONNET, call_structured
 from models import AutoFixRequest, AutoFixResponse

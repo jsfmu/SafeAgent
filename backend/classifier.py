@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Haiku 4.5 pre-classifier — fast domain + complexity triage."""
 from claude_client import HAIKU, call_structured
 from models import ClassifyRequest, ClassifyResponse

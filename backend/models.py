@@ -124,6 +124,26 @@ class AutoFixResponse(BaseModel):
     fix_type: str
 
 
+# ── Human Override (Evan's audit log — lighter than HITLDecision) ────────────
+
+class HumanOverride(BaseModel):
+    session_id:      str
+    agent_name:      str
+    tool_name:       str
+    decision:        Literal["approve_fix", "modify", "override"]
+    modified_params: Optional[dict] = None
+
+
+# ── Pub/Sub Event (Evan → frontend SSE) ──────────────────────────────────────
+
+class PubSubEvent(BaseModel):
+    event_type: str
+    agent_name: str
+    status:     str
+    timestamp:  float
+    score:      Optional[int] = None
+
+
 # ── Human Decision (HITL) ─────────────────────────────────────────────────────
 
 class HITLDecision(BaseModel):

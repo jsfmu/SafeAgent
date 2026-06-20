@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Sonnet 4.6 + Extended Thinking — topology reasoning with visible chain."""
 from claude_client import SONNET, call_structured
 from models import TopologyOption, TopologyRequest, TopologyResponse

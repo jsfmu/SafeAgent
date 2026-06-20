@@ -15,8 +15,11 @@ Routes:
 from __future__ import annotations
 import asyncio
 import json
+import os
 import uuid
 from typing import AsyncGenerator
+
+import httpx
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -40,10 +43,27 @@ from models import (
 )
 from scaffolder import scaffold
 from topology import propose_topologies
+from redis_client import init_redis, close_redis
+from routers import gate, pubsub, memory, audit
 
 load_dotenv()
 
-app = FastAPI(title="SafeAgent Backend", version="1.0.0")
+# Must run before any Anthropic/LangChain calls so spans are captured
+import sys
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from arize.instrumentation import setup_tracing
+setup_tracing()
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    await init_redis()
+    yield
+    await close_redis()
+
+app = FastAPI(title="SafeAgent Backend", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +71,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Evan's routers — gate, pubsub, memory, audit all on the same service
+app.include_router(gate.router,   prefix="/gate",   tags=["Safety Gate"])
+app.include_router(pubsub.router, prefix="/pubsub", tags=["Pub/Sub"])
+app.include_router(memory.router, prefix="/memory", tags=["Agent Memory"])
+app.include_router(audit.router,  prefix="/audit",  tags=["Audit"])
 
 # In-memory session state
 _runners: dict[str, GraphRunner] = {}
@@ -178,6 +204,39 @@ def export_session(
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=safe-agent-blueprint.json"},
     )
+
+
+# ── Proof Panel ───────────────────────────────────────────────────────────────
+
+GATE_BASE = os.getenv("SAFETY_GATE_URL", "http://localhost:8000/gate/check").replace("/gate/check", "")
+
+@app.get("/proof/{session_id}")
+async def proof_session(session_id: str, predicted_cost_usd: float = 0.09):
+    """
+    Merges Arize trace data (session_tracer) with Evan's Redis cache stats.
+    Called by Utkarsh's frontend ProofPanel.
+    """
+    import sys as _sys
+    import os as _os_inner
+    _sys.path.insert(0, _os_inner.path.join(_os_inner.path.dirname(__file__), ".."))
+    from arize.instrumentation import session_tracer
+
+    proof = session_tracer.get_proof_data(session_id, predicted_cost_usd)
+
+    # Fetch Evan's cache stats — fail gracefully if gate service is down
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(f"{GATE_BASE}/audit/cache-stats/{session_id}")
+            if r.status_code == 200:
+                stats = r.json()
+                proof["redis_cache_hits"] = stats.get("cache_hits", 0)
+                proof["redis_total_calls"] = stats.get("cache_hits", 0) + stats.get("cache_misses", 0)
+                # Rough tokens-saved estimate: avg ~900 tokens per skipped T3 call
+                proof["tokens_saved"] = stats.get("cache_hits", 0) * 900
+    except Exception:
+        pass  # gate service not running — proof panel shows zeros
+
+    return proof
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Blueprint JSON export — safe-agent-blueprint.json (Hour 18-20)."""
 from models import BlueprintExport, GraphBlueprint, CostPrediction, RunEvent
 
