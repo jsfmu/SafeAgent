@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 router = APIRouter()
 
-AGENTVERSE_SEARCH_URL = "https://agentverse.ai/v1/search"
+AGENTVERSE_SEARCH_URL = "https://agentverse.ai/v1/search/agents"
 _API_KEY: Optional[str] = None
 
 
@@ -59,24 +59,28 @@ async def discover_agents(req: DiscoverRequest):
                 r = await client.post(
                     AGENTVERSE_SEARCH_URL,
                     headers={"Authorization": f"Bearer {key}"},
-                    json={
-                        "search_text": query,
-                        "sort": "relevancy",
-                        "direction": "desc",
-                        "cutoff": "balanced",
-                        "limit": req.limit,
-                    },
+                    json={"search_text": query, "limit": req.limit},
                 )
                 if r.status_code == 200:
                     data = r.json()
-                    agents = data if isinstance(data, list) else data.get("agents", [])
-                    return DiscoverResponse(
-                        agents=[AgentverseAgent(**a) for a in agents[:req.limit]],
-                        source="agentverse",
-                        query=query,
-                    )
-        except Exception:
-            pass  # fall through to mock
+                    raw_agents = data if isinstance(data, list) else data.get("agents", [])
+                    agents = []
+                    for a in raw_agents[:req.limit]:
+                        agents.append(AgentverseAgent(
+                            address=a.get("address", ""),
+                            name=a.get("name", "Unknown"),
+                            status="active" if not a.get("unresponsive") else "inactive",
+                            total_interactions=a.get("total_interactions", 0),
+                            recent_interactions=a.get("recent_interactions", 0),
+                            rating=a.get("rating"),
+                            category=a.get("type", a.get("category", "community")),
+                            last_updated=a.get("last_updated", ""),
+                        ))
+                    return DiscoverResponse(agents=agents, source="agentverse", query=query)
+                else:
+                    print(f"[ASI] AgentVerse returned {r.status_code}: {r.text[:300]}")
+        except Exception as e:
+            print(f"[ASI] AgentVerse request failed: {e}")
 
     return _mock_response(req.domain, query, req.limit)
 

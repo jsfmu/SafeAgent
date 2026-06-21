@@ -1,6 +1,8 @@
 anthropic>=0.40.0
 fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
+# uvicorn without [standard] — avoids uvloop/httptools C extensions that break
+# in Vercel serverless and other sandboxed environments
+uvicorn>=0.30.0
 langgraph>=0.2.0
 langchain-anthropic>=0.3.0
 langchain-core>=0.3.0
@@ -8,5 +10,14 @@ pydantic>=2.0.0
 python-dotenv>=1.0.0
 httpx>=0.27.0
 sse-starlette>=2.0.0
+# Standard redis client (fallback when UPSTASH_REDIS_REST_URL not set)
 redis>=5.2.0
+# Upstash serverless Redis — used when UPSTASH_REDIS_REST_URL is set (Vercel / CI)
+upstash-redis>=1.7.0
 deepgram-sdk>=3.0.0
+# Arize Phoenix tracing + OpenInference instrumentation
+arize-phoenix>=4.0
+openinference-instrumentation-langchain>=0.1
+openinference-instrumentation-anthropic>=0.1
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.20.0

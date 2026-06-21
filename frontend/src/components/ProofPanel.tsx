@@ -166,12 +166,12 @@ export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [], g
           <StatCard
             label="Predicted cost"
             value={`${(data.predicted_cost_usd * 100).toFixed(1)}¢`}
-            sub="labeled PREDICTION upfront"
+            sub="US cents per run · labeled PREDICTION upfront"
           />
           <StatCard
             label="Actual cost"
             value={`${(data.topology_a.actual_cost_usd * 100).toFixed(1)}¢`}
-            sub={`${variance > 0 ? "+" : ""}${variance.toFixed(0)}% variance — shown openly`}
+            sub={`US cents per run · ${variance > 0 ? "+" : ""}${variance.toFixed(0)}% vs prediction`}
             highlight={Math.abs(variance) > 30 ? "warn" : "good"}
           />
           <StatCard

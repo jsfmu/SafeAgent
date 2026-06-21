@@ -8,6 +8,7 @@ import type { GraphBlueprint } from "../types";
 interface Props {
   blueprint: GraphBlueprint;
   builderIntent: string;
+  riskProfile?: string;
 }
 
 function stepVerb(tools: string[]): string {
@@ -29,21 +30,39 @@ function agentSentence(name: string, _role: string, tools: string[]): string {
   return `${name} ${verb} ${toolLabel}.`;
 }
 
-export function PlainEnglishSummary({ blueprint, builderIntent }: Props) {
+export function PlainEnglishSummary({ blueprint, builderIntent, riskProfile }: Props) {
   const agents = blueprint.agents;
-  const hasExternalSend = agents.some(a =>
-    a.tools.some(t => t.includes("email") || t.includes("send") || t.includes("notify") || t.includes("post"))
-  );
+
   const hasDelete = agents.some(a =>
     a.tools.some(t => t.includes("delete") || t.includes("drop") || t.includes("remove"))
   );
-  const riskLevel = hasDelete ? "high" : hasExternalSend ? "medium" : "low";
+  const hasExternalSend = agents.some(a =>
+    a.tools.some(t =>
+      t.includes("email") || t.includes("send") || t.includes("notify") ||
+      t.includes("post") || t.includes("sms") || t.includes("page") ||
+      t.includes("ehr") || t.includes("write") || t.includes("roster")
+    )
+  );
 
-  const riskStyles = {
+  // Prefer the classifier's risk_profile string, fall back to tool heuristics
+  function deriveRiskLevel(): "low" | "medium" | "high" {
+    if (riskProfile) {
+      const lower = riskProfile.toLowerCase();
+      if (lower.startsWith("high")) return "high";
+      if (lower.startsWith("medium") || lower.startsWith("med")) return "medium";
+      if (lower.startsWith("low")) return "low";
+    }
+    return hasDelete ? "high" : hasExternalSend ? "medium" : "low";
+  }
+
+  const riskLevel = deriveRiskLevel();
+
+  const riskStyleMap = {
     low:    { bg: "bg-emerald-50 border-emerald-200", text: "text-emerald-700", badge: "bg-emerald-100 text-emerald-700 border-emerald-300", label: "Low Risk" },
     medium: { bg: "bg-amber-50 border-amber-200",     text: "text-amber-800",   badge: "bg-amber-100 text-amber-700 border-amber-300",     label: "Medium Risk" },
     high:   { bg: "bg-red-50 border-red-200",         text: "text-red-800",     badge: "bg-red-100 text-red-700 border-red-300",           label: "High Risk" },
-  }[riskLevel];
+  };
+  const riskStyles = riskStyleMap[riskLevel] ?? riskStyleMap.low;
 
   return (
     <div className={`border-2 rounded-2xl p-5 mb-5 ${riskStyles.bg}`}>

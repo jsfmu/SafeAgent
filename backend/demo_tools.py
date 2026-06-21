@@ -75,7 +75,7 @@ def parse_resume(resume_text: str) -> dict:
 def apply_scoring_rubric(candidate: dict, rubric: dict) -> dict:
     time.sleep(0.5)
 
-    tier = UNIVERSITY_TIER.get(candidate["university"], 4)
+    tier = UNIVERSITY_TIER.get(candidate.get("university", ""), 4)
     uni_score = max(0, (4 - tier) / 3 * 100)
     exp_score = min(100, candidate["years_experience"] / 10 * 100)
     portfolio_score = min(100, candidate["github_stars"] / 2000 * 100)

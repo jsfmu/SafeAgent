@@ -81,8 +81,6 @@ def propose_topologies(req: TopologyRequest) -> TopologyResponse:
         tool_schema=SCHEMA,
         tool_name="propose_topologies",
         cache_system=True,
-        thinking=True,
-        thinking_budget=10000,
     )
 
     def build_option(d: dict) -> TopologyOption:
@@ -104,5 +102,5 @@ def propose_topologies(req: TopologyRequest) -> TopologyResponse:
     return TopologyResponse(
         option_a=build_option(raw["option_a"]),
         option_b=build_option(raw["option_b"]),
-        thinking_summary=raw["thinking_summary"],
+        thinking_summary=raw.get("thinking_summary", ""),
     )

@@ -4,6 +4,8 @@
   "framework": "vite",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "env": {
-    "VITE_USE_MOCK": "false"
+    "VITE_USE_MOCK": "false",
+    "VITE_API_URL": "https://YOUR_RAILWAY_APP.up.railway.app",
+    "VITE_GATE_URL": "https://YOUR_RAILWAY_APP.up.railway.app"
   }
 }

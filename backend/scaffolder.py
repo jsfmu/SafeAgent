@@ -4,7 +4,7 @@ Supports multi-turn edits: pass existing_blueprint + modification_request
 to update the graph without full restart (Hour 14–16).
 """
 from __future__ import annotations
-from claude_client import SONNET, call_structured
+from claude_client import HAIKU, call_structured
 from models import (
     AgentDefinition, CostPrediction, GraphBlueprint,
     GraphEdge, ScaffoldRequest, ScaffoldResponse,
@@ -94,7 +94,7 @@ def scaffold(req: ScaffoldRequest) -> ScaffoldResponse:
         user_parts.append(f"\nMODIFICATION REQUEST: {req.modification_request}")
 
     raw = call_structured(
-        model=SONNET,
+        model=HAIKU,
         system=SYSTEM,
         messages=[{"role": "user", "content": "\n".join(user_parts)}],
         tool_schema=SCHEMA,

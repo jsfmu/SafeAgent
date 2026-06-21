@@ -15,6 +15,14 @@ router = APIRouter()
 STREAM_KEY = "safeagent:gate:stream"
 
 
+def _fields_to_dict(fields) -> dict:
+    """Upstash xrange returns fields as a flat list [k, v, k, v, ...]; redis-py returns a dict."""
+    if isinstance(fields, dict):
+        return fields
+    it = iter(fields)
+    return {k: v for k, v in zip(it, it)}
+
+
 @router.get("/export/{session_id}")
 async def export_blueprint(session_id: str):
     """
@@ -28,7 +36,8 @@ async def export_blueprint(session_id: str):
 
     # Filter to this session
     events = []
-    for entry_id, fields in raw_entries:
+    for entry_id, raw_fields in raw_entries:
+        fields = _fields_to_dict(raw_fields)
         if fields.get("session_id") == session_id:
             events.append({
                 "stream_id": entry_id,
@@ -57,7 +66,7 @@ async def stream_tail(count: int = 50):
     """
     r   = get_redis()
     raw = await r.xrevrange(STREAM_KEY, count=count)
-    entries = [{"stream_id": eid, **fields} for eid, fields in raw]
+    entries = [{"stream_id": eid, **_fields_to_dict(fields)} for eid, fields in raw]
     return {"entries": entries, "count": len(entries)}
 
 
@@ -74,7 +83,8 @@ async def cache_stats(session_id: str):
     total_latency = 0.0
     decisions = {"allow": 0, "flag": 0, "block": 0}
 
-    for _, fields in raw:
+    for _, raw_fields in raw:
+        fields = _fields_to_dict(raw_fields)
         if fields.get("session_id") != session_id:
             continue
         if fields.get("cache_hit") == "True":

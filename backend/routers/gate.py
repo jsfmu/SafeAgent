@@ -246,10 +246,14 @@ async def gate_check(inp: GateInput) -> GateOutput:
     fix  = scored.get("fix_draft")
 
     # Decision logic:
-    #   T1 → BLOCK  (hard pattern match, no recovery)
-    #   T3 ≥ 70    → WARN   (Joseph generates auto-fix + waits for HITL)
-    #   T3 < 70    → ALLOW
-    if mis >= WARN_THRESHOLD or ovr >= WARN_THRESHOLD:
+    #   T1        → BLOCK  (hard pattern match, no recovery)
+    #   T3 ≥ 95   → BLOCK  (extreme misalignment — data exfil, destructive irreversible action)
+    #   T3 ≥ 70   → WARN   (auto-fix generated + HITL required)
+    #   T3 < 70   → ALLOW
+    BLOCK_THRESHOLD = 95
+    if mis >= BLOCK_THRESHOLD or ovr >= BLOCK_THRESHOLD:
+        decision = "BLOCK"
+    elif mis >= WARN_THRESHOLD or ovr >= WARN_THRESHOLD:
         decision = "WARN"
     else:
         decision = "ALLOW"
