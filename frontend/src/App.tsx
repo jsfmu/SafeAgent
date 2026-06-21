@@ -6,6 +6,9 @@ import { FlagModal } from "./components/FlagModal";
 import { ProofPanel } from "./components/ProofPanel";
 import { AuditLog } from "./components/AuditLog";
 import { SponsorLog, eventToLogEntries } from "./components/SponsorLog";
+import { AsiDiscovery } from "./components/AsiDiscovery";
+import type { AsiAgent } from "./components/AsiDiscovery";
+import { CodeViewer } from "./components/CodeViewer";
 import type { LogEntry } from "./components/SponsorLog";
 import { useRealtimeEvents } from "./hooks/useRealtimeEvents";
 import { api, MOCK } from "./api/client";
@@ -72,6 +75,14 @@ export default function App() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [sponsorLog, setSponsorLog] = useState<LogEntry[]>([]);
 
+  // ASI:One discovery
+  const [asiAgents, setAsiAgents] = useState<AsiAgent[]>([]);
+  const [asiSource, setAsiSource] = useState<"agentverse" | "mock">("mock");
+  const [asiLoading, setAsiLoading] = useState(false);
+
+  // Code artifact
+  const [generatedCode, setGeneratedCode] = useState<string>("");
+
   // ── SSE from Joseph's backend ─────────────────────────────────────────────
 
   useRealtimeEvents(screen === "running" ? streamUrl : null, {
@@ -135,10 +146,40 @@ export default function App() {
   async function handlePromptSubmit(p: string) {
     setPrompt(p);
     setLoading(true);
+    setAsiAgents([]);
+    setGeneratedCode("");
     try {
       const cls = USE_MOCK ? MOCK.classify() : await api.classify(p);
       setClassification(cls);
-      const topo = USE_MOCK ? MOCK.topology() : await api.topology(p, cls);
+
+      // Run topology + ASI discovery in parallel
+      const [topo] = await Promise.all([
+        USE_MOCK ? Promise.resolve(MOCK.topology()) : api.topology(p, cls),
+        (async () => {
+          if (USE_MOCK) return;
+          setAsiLoading(true);
+          try {
+            const res = await api.discoverAgents(cls.domain, p);
+            setAsiAgents((res.agents as AsiAgent[]) ?? []);
+            setAsiSource((res.source as "agentverse" | "mock") ?? "mock");
+          } catch { /* silent */ } finally {
+            setAsiLoading(false);
+          }
+        })(),
+      ]);
+
+      // In mock mode populate ASI with domain-based mock via backend
+      if (USE_MOCK) {
+        setAsiLoading(true);
+        try {
+          const res = await api.discoverAgents(cls.domain, p);
+          setAsiAgents((res.agents as AsiAgent[]) ?? []);
+          setAsiSource((res.source as "agentverse" | "mock") ?? "mock");
+        } catch { /* silent */ } finally {
+          setAsiLoading(false);
+        }
+      }
+
       setTopologyResponse(topo);
       setScreen("topology");
     } finally {
@@ -156,7 +197,6 @@ export default function App() {
         ? MOCK.scaffold()
         : await api.scaffold(prompt, classification, opt, SESSION_ID);
       setBlueprint(result.blueprint);
-      // Build UI agent nodes from blueprint
       setAgents(result.blueprint.agents.map((a) => ({
         name: a.name,
         role: a.role,
@@ -165,6 +205,10 @@ export default function App() {
         status: "idle" as AgentStatus,
       })));
       setScreen("scaffold");
+      // Fetch generated code artifact in background
+      if (!USE_MOCK) {
+        api.fetchCode(SESSION_ID).then((code) => { if (code) setGeneratedCode(code); });
+      }
     } finally {
       setLoading(false);
     }
@@ -216,19 +260,22 @@ export default function App() {
         modified_params: modifiedParams ?? null,
       });
     } else {
-      // Mock: continue simulation after HITL
+      // Mock: continue simulation after HITL — use last agent from blueprint
+      const lastAgent = agents[agents.length - 1]?.name;
       setTimeout(() => setAgents((prev) =>
         prev.map((a) => a.status === "flagged" ? { ...a, status: "done" } : a)
       ), 500);
-      setTimeout(() => setAgents((prev) =>
-        prev.map((a) => a.name === "Email Agent" ? { ...a, status: "running" } : a)
-      ), 1000);
+      if (lastAgent) {
+        setTimeout(() => setAgents((prev) =>
+          prev.map((a) => a.name === lastAgent ? { ...a, status: "running" } : a)
+        ), 1000);
+        setTimeout(() => setAgents((prev) =>
+          prev.map((a) => a.name === lastAgent ? { ...a, status: "done" } : a)
+        ), 2000);
+      }
       setTimeout(() => {
-        setAgents((prev) =>
-          prev.map((a) => a.name === "Email Agent" ? { ...a, status: "done" } : a)
-        );
         setProof(MOCK.proof());
-        setAuditEvents((prev) => [...prev, ...MOCK_AUDIT_TAIL]);
+        setAuditEvents((prev) => [...prev, ...MOCK_AUDIT_TAIL(lastAgent ?? "Final Agent")]);
         setScreen("proof");
       }, 2500);
     }
@@ -258,11 +305,22 @@ export default function App() {
 
   function simulateMockRun() {
     setSponsorLog([]);
+
+    // Use actual blueprint agents — not hardcoded names
+    const agentList = agents.length > 0 ? agents : [];
+    const firstAgent = agentList[0]?.name ?? "Agent 1";
+    const secondAgent = agentList[1]?.name ?? "Agent 2";
+    const flagAgent = agentList[Math.min(2, agentList.length - 1)]?.name ?? agentList[agentList.length - 1]?.name ?? "Agent";
+    const lastAgent = agentList[agentList.length - 1]?.name ?? flagAgent;
+    const firstTool = agentList[0]?.tools[0] ?? "process";
+    const flagTool = agentList[Math.min(2, agentList.length - 1)]?.tools[0] ?? "execute";
+
     const seq: [string, AgentStatus, number][] = [
-      ["Coordinator", "running", 300],
-      ["Resume Parser", "running", 900],
-      ["Resume Parser", "done", 1900],
-      ["Candidate Scorer", "running", 2200],
+      [firstAgent, "running", 300],
+      ...(secondAgent !== firstAgent
+        ? [[secondAgent, "running", 900], [secondAgent, "done", 1900]] as [string, AgentStatus, number][]
+        : []),
+      [flagAgent, "running", 2200],
     ];
     seq.forEach(([name, status, delay]) =>
       setTimeout(() =>
@@ -270,19 +328,19 @@ export default function App() {
       , delay)
     );
 
-    // Mock sponsor log timeline
+    // Sponsor log uses dynamic agent names
     const mockEntries: [LogEntry, number][] = [
-      [{ id: "m1", timestamp: "", sponsor: "anthropic", label: "Claude Haiku 4.5 starting Coordinator", detail: "pre-classify domain + complexity" }, 300],
-      [{ id: "m2", timestamp: "", sponsor: "arize", label: "Trace emitted for Coordinator", detail: "tokens · latency · cost → Phoenix" }, 700],
-      [{ id: "m3", timestamp: "", sponsor: "anthropic", label: "Claude Haiku 4.5 starting Resume Parser", detail: "tool: parse_resume" }, 900],
-      [{ id: "m4", timestamp: "", sponsor: "redis", label: "T1 Guardrails: PASS <1ms", detail: "pattern match on parse_resume — no blocked patterns" }, 1100],
+      [{ id: "m1", timestamp: "", sponsor: "anthropic", label: `Claude Haiku 4.5 starting ${firstAgent}`, detail: "pre-classify domain + complexity" }, 300],
+      [{ id: "m2", timestamp: "", sponsor: "arize", label: `Trace emitted for ${firstAgent}`, detail: "tokens · latency · cost → Phoenix" }, 700],
+      [{ id: "m3", timestamp: "", sponsor: "anthropic", label: `Claude Haiku 4.5 starting ${secondAgent}`, detail: `tool: ${firstTool}` }, 900],
+      [{ id: "m4", timestamp: "", sponsor: "redis", label: "T1 Guardrails: PASS <1ms", detail: `pattern match on ${firstTool} — no blocked patterns` }, 1100],
       [{ id: "m5", timestamp: "", sponsor: "redis", label: "T2 Semantic Cache: MISS → routing to T3", detail: "similarity 0.61 — below threshold" }, 1300],
       [{ id: "m6", timestamp: "", sponsor: "anthropic", label: "T3 Sonnet scored: misalignment=12 oversight=8", detail: "decision: ALLOW 820ms", tier: 3 }, 1700],
-      [{ id: "m7", timestamp: "", sponsor: "redis", label: "Action allowed — event written to Stream", detail: "parse_resume approved" }, 1850],
-      [{ id: "m8", timestamp: "", sponsor: "arize", label: "Trace emitted for Resume Parser", detail: "tokens · latency · cost → Phoenix" }, 1900],
-      [{ id: "m9", timestamp: "", sponsor: "anthropic", label: "Claude Sonnet 4.6 starting Candidate Scorer", detail: "tool: apply_scoring_rubric" }, 2200],
-      [{ id: "m10", timestamp: "", sponsor: "redis", label: "T1 Guardrails: PASS <1ms", detail: "pattern match on apply_scoring_rubric" }, 2350],
-      [{ id: "m11", timestamp: "", sponsor: "redis", label: "T2 Semantic routing: goal-divergent signal → Misalignment scorer", detail: "similarity 0.88 — routing with cached context" }, 2600, ],
+      [{ id: "m7", timestamp: "", sponsor: "redis", label: "Action allowed — event written to Stream", detail: `${firstTool} approved` }, 1850],
+      [{ id: "m8", timestamp: "", sponsor: "arize", label: `Trace emitted for ${secondAgent}`, detail: "tokens · latency · cost → Phoenix" }, 1900],
+      [{ id: "m9", timestamp: "", sponsor: "anthropic", label: `Claude Sonnet 4.6 starting ${flagAgent}`, detail: `tool: ${flagTool}` }, 2200],
+      [{ id: "m10", timestamp: "", sponsor: "redis", label: "T1 Guardrails: PASS <1ms", detail: `pattern match on ${flagTool}` }, 2350],
+      [{ id: "m11", timestamp: "", sponsor: "redis", label: "T2 Semantic routing: goal-divergent signal → Misalignment scorer", detail: "similarity 0.88 — routing with cached context" }, 2600],
       [{ id: "m12", timestamp: "", sponsor: "anthropic", label: "T3 Sonnet scored: misalignment=87 oversight=31", detail: "decision: WARN 847ms", tier: 3 }, 3000],
       [{ id: "m13", timestamp: "", sponsor: "redis", label: "Gate blocked action → waiting for human", detail: "misalignment=87, written to Redis Stream" }, 3300],
     ];
@@ -295,14 +353,17 @@ export default function App() {
 
     setTimeout(() => {
       setAgents((prev) =>
-        prev.map((a) => a.name === "Candidate Scorer" ? { ...a, status: "flagged" } : a)
+        prev.map((a) => a.name === flagAgent ? { ...a, status: "flagged" } : a)
       );
       setActiveFlag({
-        agentName: "Candidate Scorer",
-        toolName: "apply_scoring_rubric",
+        agentName: flagAgent,
+        toolName: flagTool,
         payload: MOCK.flagPayload(),
       });
     }, 3300);
+
+    // Store last agent name for HITL continuation
+    (simulateMockRun as unknown as Record<string, string>)._lastAgent = lastAgent;
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -342,11 +403,20 @@ export default function App() {
         )}
 
         {screen === "topology" && topologyResponse && (
-          <TopologyPicker
-            response={topologyResponse}
-            onSelect={handleTopologySelect}
-            loading={loading}
-          />
+          <div className="max-w-4xl mx-auto">
+            <TopologyPicker
+              response={topologyResponse}
+              onSelect={handleTopologySelect}
+              loading={loading}
+            />
+            <div className="px-8 pb-8">
+              <AsiDiscovery
+                agents={asiAgents}
+                source={asiSource}
+                loading={asiLoading}
+              />
+            </div>
+          </div>
         )}
 
         {(screen === "scaffold" || screen === "running") && blueprint && (
@@ -416,6 +486,14 @@ export default function App() {
             </div>
 
             <AgentGraph agents={agents} topology={blueprintTopology} />
+
+            {generatedCode && (
+              <CodeViewer
+                code={generatedCode}
+                sessionId={SESSION_ID}
+                codeUrl={api.exportCode(SESSION_ID)}
+              />
+            )}
           </div>
 
           {/* Sponsor activity log — only visible during run */}
@@ -428,7 +506,7 @@ export default function App() {
         )}
 
         {screen === "proof" && proof && (
-          <ProofPanel data={proof} sessionId={SESSION_ID} onExport={handleExport} />
+          <ProofPanel data={proof} sessionId={SESSION_ID} onExport={handleExport} auditEvents={auditEvents} />
         )}
 
         {screen === "audit" && (
@@ -450,13 +528,12 @@ export default function App() {
   );
 }
 
-const MOCK_AUDIT_TAIL: AuditEvent[] = [
-  {
+function MOCK_AUDIT_TAIL(lastAgent: string): AuditEvent[] {
+  return [{
     id: "tail-1",
     timestamp: new Date(Date.now() - 800).toISOString(),
     type: "action",
-    agent_name: "Email Agent",
-    tool_name: "send_email",
+    agent_name: lastAgent,
     decision: "ALLOW",
-  },
-];
+  }];
+}

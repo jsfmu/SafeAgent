@@ -99,6 +99,61 @@ export function TopologyPicker({ response, onSelect, loading }: Props) {
           })}
         </div>
 
+        {/* Side-by-side comparison table */}
+        <div className="bg-white border-2 border-emerald-200 rounded-2xl overflow-hidden mb-6 shadow-sm">
+          <div className="bg-emerald-50 border-b border-emerald-200 px-5 py-3">
+            <span className="text-sm font-bold text-emerald-900">Side-by-Side Comparison</span>
+            <span className="text-xs text-emerald-500 ml-2">— all values are predictions</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-emerald-100">
+                <th className="text-left px-5 py-3 text-xs text-emerald-500 uppercase tracking-wide font-semibold w-1/3"></th>
+                {options.map((o) => (
+                  <th key={o.id} className={`px-5 py-3 text-center text-xs font-bold uppercase tracking-wide ${o.recommended ? "text-emerald-700" : "text-emerald-500"}`}>
+                    {o.name} {o.recommended && <span className="text-[10px] bg-emerald-100 px-1.5 py-0.5 rounded-full ml-1 normal-case">★ rec</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-emerald-50">
+              {[
+                {
+                  label: "Est. Cost",
+                  cells: options.map((o) => `${(o.estimated_cost_usd_low * 100).toFixed(0)}–${(o.estimated_cost_usd_high * 100).toFixed(0)}¢`),
+                },
+                {
+                  label: "Est. Latency",
+                  cells: options.map((o) => `${o.estimated_latency_sec.toFixed(1)}s`),
+                },
+                {
+                  label: "Pros",
+                  cells: options.map((o) => o.tradeoffs_pro.map((p) => `✓ ${p}`).join("\n")),
+                  multiline: true,
+                },
+                {
+                  label: "Cons",
+                  cells: options.map((o) => o.tradeoffs_con.map((c) => `✗ ${c}`).join("\n")),
+                  multiline: true,
+                },
+              ].map(({ label, cells, multiline }) => (
+                <tr key={label}>
+                  <td className="px-5 py-3 text-xs font-semibold text-emerald-600 uppercase tracking-wide align-top">{label}</td>
+                  {cells.map((cell, i) => (
+                    <td key={i} className="px-5 py-3 text-emerald-900 font-mono text-xs text-center align-top">
+                      {multiline
+                        ? cell.split("\n").map((line, j) => (
+                            <div key={j} className={`text-left ${line.startsWith("✓") ? "text-emerald-600" : "text-red-400"}`}>{line}</div>
+                          ))
+                        : cell}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
         <button
           onClick={() => {
             const opt = options.find(o => o.id === selectedId);

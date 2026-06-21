@@ -122,7 +122,7 @@ export function eventToLogEntries(evt: RunEvent): LogEntry[] {
         timestamp: ts,
         sponsor: "arize",
         label: "Run complete — all traces exported to Phoenix",
-        detail: "view at localhost:6006",
+        detail: `view at ${import.meta.env.VITE_PHOENIX_URL ?? "localhost:6006"}`,
       }];
 
     default:

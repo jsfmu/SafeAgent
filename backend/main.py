@@ -44,7 +44,8 @@ from models import (
 from scaffolder import scaffold
 from topology import propose_topologies
 from redis_client import init_redis, close_redis
-from routers import gate, pubsub, memory, audit
+from routers import gate, pubsub, memory, audit, voice, asi
+from code_export import generate_langgraph_code
 
 load_dotenv()
 
@@ -77,6 +78,8 @@ app.include_router(gate.router,   prefix="/gate",   tags=["Safety Gate"])
 app.include_router(pubsub.router, prefix="/pubsub", tags=["Pub/Sub"])
 app.include_router(memory.router, prefix="/memory", tags=["Agent Memory"])
 app.include_router(audit.router,  prefix="/audit",  tags=["Audit"])
+app.include_router(voice.router,  prefix="/voice",  tags=["Voice"])
+app.include_router(asi.router,    prefix="/asi",    tags=["ASI:One"])
 
 # In-memory session state
 _runners: dict[str, GraphRunner] = {}
@@ -203,6 +206,21 @@ def export_session(
         iter([json.dumps(data, indent=2)]),
         media_type="application/json",
         headers={"Content-Disposition": "attachment; filename=safe-agent-blueprint.json"},
+    )
+
+
+# ── Code Export ───────────────────────────────────────────────────────────────
+
+@app.get("/export/{session_id}/code")
+def export_code(session_id: str):
+    blueprint_dict = _session_blueprints.get(session_id)
+    if not blueprint_dict:
+        raise HTTPException(404, "Session not found or not yet scaffolded")
+    code = generate_langgraph_code(GraphBlueprint(**blueprint_dict))
+    return StreamingResponse(
+        iter([code]),
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename=safe_agent_{session_id[:8]}.py"},
     )
 
 

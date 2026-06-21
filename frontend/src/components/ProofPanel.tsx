@@ -51,13 +51,16 @@ function StatCard({
   );
 }
 
+import type { AuditEvent } from "../types";
+
 interface Props {
   data: ProofData;
   sessionId: string;
   onExport: () => void;
+  auditEvents?: AuditEvent[];
 }
 
-export function ProofPanel({ data, onExport }: Props) {
+export function ProofPanel({ data, onExport, auditEvents = [] }: Props) {
   const variance =
     ((data.topology_a.actual_cost_usd - data.predicted_cost_usd) /
       data.predicted_cost_usd) *
@@ -65,6 +68,15 @@ export function ProofPanel({ data, onExport }: Props) {
   const cacheRate = Math.round(
     (data.redis_cache_hits / data.redis_total_calls) * 100
   );
+
+  // Safety gate summary from live audit events
+  const gateEvents = auditEvents.filter((e) => e.type === "gate");
+  const hitlEvents = auditEvents.filter((e) => e.type === "hitl");
+  const flagsBlocked = gateEvents.filter((e) => e.decision === "BLOCK").length;
+  const flagsWarned = gateEvents.filter((e) => e.decision === "WARN").length;
+  const approveFix = hitlEvents.filter((e) => e.hitl_action === "approve_fix").length;
+  const modified = hitlEvents.filter((e) => e.hitl_action === "modify").length;
+  const overridden = hitlEvents.filter((e) => e.hitl_action === "override").length;
 
   const perAgentData = data.topology_a.per_agent.map((a) => ({
     name: a.agent_name.replace(" Agent", "").replace("Candidate ", ""),
@@ -137,6 +149,28 @@ export function ProofPanel({ data, onExport }: Props) {
           />
         </div>
 
+        {/* Safety Gate Summary */}
+        {(gateEvents.length > 0 || hitlEvents.length > 0) && (
+          <div className="bg-amber-50 border-2 border-amber-200 rounded-2xl p-5 mb-6 shadow-sm">
+            <div className="text-sm font-bold text-amber-900 mb-3">Safety Gate Summary</div>
+            <div className="grid grid-cols-3 md:grid-cols-6 gap-3 text-center">
+              {[
+                { label: "Flags Blocked", value: flagsBlocked, color: "text-red-600" },
+                { label: "Flags Warned", value: flagsWarned, color: "text-amber-600" },
+                { label: "Total Flags", value: gateEvents.length, color: "text-amber-700" },
+                { label: "Approved Fix", value: approveFix, color: "text-emerald-600" },
+                { label: "Modified", value: modified, color: "text-blue-600" },
+                { label: "Overridden", value: overridden, color: "text-gray-600" },
+              ].map(({ label, value, color }) => (
+                <div key={label} className="bg-white rounded-xl p-3 border border-amber-100">
+                  <div className={`text-2xl font-bold font-mono ${color}`}>{value}</div>
+                  <div className="text-xs text-amber-600 mt-0.5">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           {/* Safety drift */}
           <div className="bg-white border-2 border-emerald-200 rounded-2xl p-5 shadow-sm">
@@ -193,13 +227,16 @@ export function ProofPanel({ data, onExport }: Props) {
               <Bar dataKey="latency" fill="#f59e0b" name="Latency (s)" radius={[0, 4, 4, 0]} />
             </BarChart>
           </ResponsiveContainer>
-          <p className="text-xs text-emerald-500 mt-2">
-            Bottleneck: Candidate Scorer (
-            {Math.round(
-              (data.topology_a.per_agent[2]?.latency_ms / data.topology_a.actual_latency_ms) * 100
-            )}
-            % of total latency) → consider downgrading scorer to Haiku on simple patterns
-          </p>
+          {(() => {
+            const bottleneck = [...data.topology_a.per_agent].sort((a, b) => b.latency_ms - a.latency_ms)[0];
+            if (!bottleneck || !data.topology_a.actual_latency_ms) return null;
+            const pct = Math.round((bottleneck.latency_ms / data.topology_a.actual_latency_ms) * 100);
+            return (
+              <p className="text-xs text-emerald-500 mt-2">
+                Bottleneck: {bottleneck.agent_name} ({pct}% of total latency) → consider downgrading to Haiku on simple patterns
+              </p>
+            );
+          })()}
         </div>
 
         {/* LLM Evals + Hallucination Detection + Agent Memory */}

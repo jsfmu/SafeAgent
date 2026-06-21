@@ -34,6 +34,7 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
+  base: () => BASE,
   health: () => get<{ status: string }>("/health"),
 
   classify: (description: string) =>
@@ -93,6 +94,17 @@ export const api = {
     const qs = params.toString();
     return `${BASE}/export/${session_id}${qs ? "?" + qs : ""}`;
   },
+
+  exportCode: (session_id: string) => `${BASE}/export/${session_id}/code`,
+
+  fetchCode: async (session_id: string): Promise<string> => {
+    const r = await fetch(`${BASE}/export/${session_id}/code`);
+    if (!r.ok) return "";
+    return r.text();
+  },
+
+  discoverAgents: (domain: string, description: string) =>
+    post<{ agents: unknown[]; source: string; query: string }>("/asi/discover", { domain, description }),
 
   // Proof + audit are from Arize/Redis (Evan) — no backend endpoint yet
   // Frontend computes proof from collected SSE events until Evan's /proof endpoint ships
