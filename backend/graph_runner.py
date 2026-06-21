@@ -28,6 +28,7 @@ import os as _os
 _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
 from arize.instrumentation import session_tracer
 from auto_fix import generate_fix
+from claude_tool_executor import execute_with_claude
 from demo_tools import (
     BIASED_RUBRIC, SAMPLE_RESUMES,
     apply_scoring_rubric, parse_resume, send_email,
@@ -338,9 +339,71 @@ class GraphRunner:
 
     def _build_graph(self):
         workflow = StateGraph(dict)
+        topo = self.blueprint.topology
 
-        # Determine node order: use blueprint edges if present, otherwise agents list order.
-        ordered_agents = _order_agents(self.blueprint)
+        # Use the precise hiring demo path only when the exact demo tool is present.
+        # Any other prompt — including ones with "parser" or "scorer" in agent names —
+        # goes through the generic Claude-executor path below.
+        tool_names = {t for a in self.blueprint.agents for t in a.tools}
+        is_hiring_demo = "apply_scoring_rubric" in tool_names
+
+        if is_hiring_demo:
+            workflow.add_node("Parser", trace_node("Parser", "haiku-4-5", topo)(self._node_parse))
+            workflow.add_node("Scorer", trace_node("Scorer", "haiku-4-5", topo)(self._node_score))
+            workflow.add_node("Email", trace_node("Email", "haiku-4-5", topo)(self._node_email))
+            workflow.set_entry_point("Parser")
+            workflow.add_edge("Parser", "Scorer")
+            workflow.add_edge("Scorer", "Email")
+            workflow.add_edge("Email", END)
+        else:
+            prev = None
+            for agent in self.blueprint.agents:
+                _agent = agent
+
+                async def generic_node(state: dict, a=_agent) -> dict:
+                    self._emit("node.started", agent_name=a.name)
+                    last_result: dict = {}
+                    for tool in a.tools:
+                        tool_params = state.get("input_data", {})
+                        final_params = await self.before_tool_call(
+                            a.name, a.role, tool, tool_params
+                        )
+                        loop = asyncio.get_event_loop()
+                        stub = TOOL_FNS.get(tool)
+                        if stub:
+                            last_result = await loop.run_in_executor(
+                                None, lambda fn=stub, p=final_params: fn(**p)
+                            )
+                        else:
+                            last_result = await loop.run_in_executor(
+                                None,
+                                execute_with_claude,
+                                a,
+                                tool,
+                                final_params,
+                                self.builder_intent,
+                                state,
+                            )
+                        state = {**state, f"{a.name}_{tool}_result": last_result}
+
+                    summary = (
+                        last_result.get("summary")
+                        or last_result.get("status", "done")
+                    )
+                    self._emit("node.completed", agent_name=a.name,
+                               result_summary=str(summary)[:120])
+                    return state
+
+                model_short = "haiku-4-5" if "haiku" in _agent.model else "sonnet-4-6"
+                workflow.add_node(
+                    agent.name,
+                    trace_node(agent.name, model_short, topo)(generic_node),
+                )
+                if prev is None:
+                    workflow.set_entry_point(agent.name)
+                else:
+                    workflow.add_edge(prev, agent.name)
+                prev = agent.name
 
         for agent in ordered_agents:
             node_fn = self._make_agent_node(agent)
