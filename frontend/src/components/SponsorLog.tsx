@@ -116,6 +116,18 @@ export function eventToLogEntries(evt: RunEvent): LogEntry[] {
         },
       ];
 
+    case "output.checked": {
+      const safe = String(d.safe ?? "true") === "true";
+      const issues = d.issues ? (typeof d.issues === "string" ? JSON.parse(d.issues) : d.issues) as string[] : [];
+      return [{
+        id,
+        timestamp: ts,
+        sponsor: "anthropic",
+        label: `Haiku output guardrail: ${safe ? "✓ safe" : `⚠ ${issues.length} issue(s)`}`,
+        detail: safe ? `${agent} output passed PII + hallucination check` : issues.join("; "),
+      }];
+    }
+
     case "run.completed":
       return [{
         id,

@@ -10,8 +10,8 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import type { ProofData } from "../types";
-import { Download } from "lucide-react";
+import type { ProofData, GraphBlueprint } from "../types";
+import { Download, Code2 } from "lucide-react";
 
 function StatCard({
   label,
@@ -61,9 +61,11 @@ interface Props {
   onExport: () => void;
   auditEvents?: AuditEvent[];
   asiAgents?: AsiAgent[];
+  generatedCode?: string;
+  blueprint?: GraphBlueprint;
 }
 
-export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [] }: Props) {
+export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [], generatedCode, sessionId }: Props) {
   const variance =
     ((data.topology_a.actual_cost_usd - data.predicted_cost_usd) /
       data.predicted_cost_usd) *
@@ -81,11 +83,31 @@ export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [] }:
   const modified = hitlEvents.filter((e) => e.hitl_action === "modify").length;
   const overridden = hitlEvents.filter((e) => e.hitl_action === "override").length;
 
-  const perAgentData = data.topology_a.per_agent.map((a) => ({
-    name: a.agent_name.replace(" Agent", "").replace("Candidate ", ""),
-    cost: +(a.cost_usd * 100).toFixed(2),
-    latency: Math.round(a.latency_ms / 100) / 10,
-  }));
+  // Distribute predicted cost/latency across agents proportionally by model tier
+  const modelWeight = (model: string) => model.includes("haiku") ? 1 : 5;
+  const perAgentActual = data.topology_a.per_agent;
+  const totalWeight = perAgentActual.reduce((s, a) => s + modelWeight(a.model), 0) || 1;
+  const totalPredictedLatency = data.topology_a.actual_latency_ms * (data.predicted_cost_usd / (data.topology_a.actual_cost_usd || data.predicted_cost_usd));
+  const perAgentData = perAgentActual.map((a) => {
+    const w = modelWeight(a.model) / totalWeight;
+    return {
+      name: a.agent_name.replace(" Agent", "").replace("Candidate ", ""),
+      actualCost: +(a.cost_usd * 100).toFixed(2),
+      predictedCost: +(data.predicted_cost_usd * w * 100).toFixed(2),
+      actualLatency: Math.round(a.latency_ms / 100) / 10,
+      predictedLatency: +((totalPredictedLatency * w) / 1000).toFixed(2),
+    };
+  });
+
+  function downloadCode() {
+    if (!generatedCode) return;
+    const filename = `safe_agent_${sessionId.slice(-8)}.py`;
+    const blob = new Blob([generatedCode], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   const topologyCompare = [
     {
@@ -117,12 +139,22 @@ export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [] }:
             <h2 className="text-2xl font-bold text-emerald-900">Proof Panel</h2>
             <p className="text-emerald-600 text-sm">Prediction vs. Reality — empirical, not vibes.</p>
           </div>
-          <button
-            onClick={onExport}
-            className="flex items-center gap-2 bg-white border-2 border-emerald-300 hover:bg-emerald-50 text-emerald-700 text-sm px-4 py-2 rounded-xl transition-colors font-medium shadow-sm"
-          >
-            <Download size={14} /> Export Blueprint JSON
-          </button>
+          <div className="flex items-center gap-2">
+            {generatedCode && (
+              <button
+                onClick={downloadCode}
+                className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-emerald-400 text-sm px-4 py-2 rounded-xl transition-colors font-medium shadow-sm border border-gray-700"
+              >
+                <Code2 size={14} /> Download Code
+              </button>
+            )}
+            <button
+              onClick={onExport}
+              className="flex items-center gap-2 bg-white border-2 border-emerald-300 hover:bg-emerald-50 text-emerald-700 text-sm px-4 py-2 rounded-xl transition-colors font-medium shadow-sm"
+            >
+              <Download size={14} /> Export Blueprint JSON
+            </button>
+          </div>
         </div>
 
         {/* Top stats */}
@@ -213,30 +245,52 @@ export function ProofPanel({ data, onExport, auditEvents = [], asiAgents = [] }:
           </div>
         </div>
 
-        {/* Per-agent breakdown */}
+        {/* Per-agent breakdown — predicted vs actual */}
         <div className="bg-white border-2 border-emerald-200 rounded-2xl p-5 shadow-sm">
-          <div className="text-sm font-bold text-emerald-900 mb-1">
-            Per-Agent Breakdown (Supervisor-Worker)
-            <span className="text-xs text-emerald-500 font-normal ml-2">Arize trace data</span>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <span className="text-sm font-bold text-emerald-900">Per-Agent Breakdown — Predicted vs Actual</span>
+              <span className="text-xs text-emerald-500 font-normal ml-2">Arize trace data</span>
+            </div>
+            <div className="flex items-center gap-3 text-xs font-medium">
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{background:"#10b981"}} /> Actual</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{background:"#94a3b8"}} /> Predicted</span>
+            </div>
           </div>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={perAgentData} layout="vertical">
+
+          {/* Cost: predicted vs actual per agent */}
+          <p className="text-xs text-emerald-600 font-semibold mb-1">Cost (¢)</p>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={perAgentData} layout="vertical" barCategoryGap="25%">
               <CartesianGrid strokeDasharray="3 3" stroke="#d1fae5" />
-              <XAxis type="number" tick={{ fill: "#059669", fontSize: 10 }} />
+              <XAxis type="number" tick={{ fill: "#059669", fontSize: 10 }} unit="¢" />
               <YAxis dataKey="name" type="category" tick={{ fill: "#064e3b", fontSize: 11 }} width={100} />
-              <Tooltip {...chartStyle} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="cost" fill="#10b981" name="Cost (¢)" radius={[0, 4, 4, 0]} />
-              <Bar dataKey="latency" fill="#f59e0b" name="Latency (s)" radius={[0, 4, 4, 0]} />
+              <Tooltip {...chartStyle} formatter={(v) => [`${v}¢`]} />
+              <Bar dataKey="predictedCost" fill="#94a3b8" name="Predicted (¢)" radius={[0, 3, 3, 0]} />
+              <Bar dataKey="actualCost" fill="#10b981" name="Actual (¢)" radius={[0, 3, 3, 0]} />
             </BarChart>
           </ResponsiveContainer>
+
+          {/* Latency: predicted vs actual per agent */}
+          <p className="text-xs text-emerald-600 font-semibold mt-4 mb-1">Latency (s)</p>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={perAgentData} layout="vertical" barCategoryGap="25%">
+              <CartesianGrid strokeDasharray="3 3" stroke="#d1fae5" />
+              <XAxis type="number" tick={{ fill: "#059669", fontSize: 10 }} unit="s" />
+              <YAxis dataKey="name" type="category" tick={{ fill: "#064e3b", fontSize: 11 }} width={100} />
+              <Tooltip {...chartStyle} formatter={(v) => [`${v}s`]} />
+              <Bar dataKey="predictedLatency" fill="#94a3b8" name="Predicted (s)" radius={[0, 3, 3, 0]} />
+              <Bar dataKey="actualLatency" fill="#10b981" name="Actual (s)" radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+
           {(() => {
             const bottleneck = [...data.topology_a.per_agent].sort((a, b) => b.latency_ms - a.latency_ms)[0];
             if (!bottleneck || !data.topology_a.actual_latency_ms) return null;
             const pct = Math.round((bottleneck.latency_ms / data.topology_a.actual_latency_ms) * 100);
             return (
               <p className="text-xs text-emerald-500 mt-2">
-                Bottleneck: {bottleneck.agent_name} ({pct}% of total latency) → consider downgrading to Haiku on simple patterns
+                Bottleneck: <span className="font-semibold text-emerald-700">{bottleneck.agent_name}</span> ({pct}% of total latency) → consider downgrading to Haiku on simple patterns
               </p>
             );
           })()}

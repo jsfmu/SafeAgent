@@ -9,6 +9,8 @@ import { SponsorLog, eventToLogEntries } from "./components/SponsorLog";
 import { AsiDiscovery } from "./components/AsiDiscovery";
 import type { AsiAgent } from "./components/AsiDiscovery";
 import { CodeViewer } from "./components/CodeViewer";
+import { PlainEnglishSummary } from "./components/PlainEnglishSummary";
+import { SecurityPanel } from "./components/SecurityPanel";
 import type { LogEntry } from "./components/SponsorLog";
 import { useRealtimeEvents } from "./hooks/useRealtimeEvents";
 import { api, MOCK } from "./api/client";
@@ -539,6 +541,13 @@ export default function App() {
               ))}
             </div>
 
+            {screen === "scaffold" && (
+              <>
+                <PlainEnglishSummary blueprint={blueprint} builderIntent={prompt} />
+                <SecurityPanel />
+              </>
+            )}
+
             <AgentGraph agents={agents} topology={blueprintTopology} />
 
             {generatedCode && (
@@ -560,7 +569,7 @@ export default function App() {
         )}
 
         {screen === "proof" && proof && (
-          <ProofPanel data={proof} sessionId={SESSION_ID} onExport={handleExport} auditEvents={auditEvents} asiAgents={asiAgents} />
+          <ProofPanel data={proof} sessionId={SESSION_ID} onExport={handleExport} auditEvents={auditEvents} asiAgents={asiAgents} generatedCode={generatedCode ?? undefined} blueprint={blueprint ?? undefined} />
         )}
 
         {screen === "audit" && (
