@@ -30,7 +30,7 @@ from demo_tools import (
     apply_scoring_rubric, parse_resume, send_email,
 )
 
-GATE_URL = os.getenv("SAFETY_GATE_URL", "http://localhost:8000/gate/check")
+GATE_URL = os.getenv("SAFETY_GATE_URL", "http://localhost:8001/gate/check")
 
 TOOL_FNS: dict[str, Callable] = {
     "parse_resume": parse_resume,
@@ -122,15 +122,18 @@ class GraphRunner:
         if gate_resp.decision == "ALLOW":
             return tool_params
 
-        # WARN or BLOCK — generate auto-fix then wait for HITL
-        fix_resp = generate_fix(AutoFixRequest(
+        # WARN or BLOCK — generate auto-fix in a thread (sync Claude call must not block event loop)
+        # then emit action.blocked so the SSE stream can deliver it to the browser immediately.
+        loop = asyncio.get_event_loop()
+        fix_req = AutoFixRequest(
             session_id=self.session_id,
             agent_name=agent_name,
             tool_name=tool_name,
             original_tool_params=tool_params,
             builder_intent=self.builder_intent,
             gate_response=gate_resp,
-        ))
+        )
+        fix_resp = await loop.run_in_executor(None, generate_fix, fix_req)
 
         self._emit("action.blocked", agent_name=agent_name, tool_name=tool_name,
                    action_id=action_id,
@@ -142,7 +145,13 @@ class GraphRunner:
                    fix_impact_preview=fix_resp.impact_preview,
                    fix_type=fix_resp.fix_type)
 
-        decision: HITLDecision = await self.hitl_queue.get()
+        try:
+            decision: HITLDecision = await asyncio.wait_for(self.hitl_queue.get(), timeout=60)
+        except asyncio.TimeoutError:
+            # No human decision in 60s — auto-approve the fix and continue
+            self._emit("human.decided", agent_name=agent_name, tool_name=tool_name,
+                       action_id=action_id, decision="approve_fix", note="auto-timeout")
+            return fix_resp.fixed_tool_params
         self._emit("human.decided", agent_name=agent_name, tool_name=tool_name,
                    action_id=action_id, decision=decision.decision)
 
@@ -189,23 +198,24 @@ class GraphRunner:
     async def _node_score(self, state: dict) -> dict:
         agent = self._agent_by_name("scorer")
         role = agent.role if agent else "Resume Scorer"
-        rubric = BIASED_RUBRIC  # gate catches this
 
         self._emit("node.started", agent_name="Scorer", tool_name="apply_scoring_rubric")
 
+        # Gate the rubric ONCE before scoring all candidates — avoids repeated HITL prompts.
+        rubric_params = await self.before_tool_call(
+            "Scorer", role, "apply_scoring_rubric",
+            {"candidate": SAMPLE_RESUMES[0], "rubric": BIASED_RUBRIC},
+        )
+        approved_rubric = rubric_params.get("rubric", BIASED_RUBRIC)
+
         all_scores = []
         for candidate in state.get("parsed_candidates", SAMPLE_RESUMES):
-            tool_params = {"candidate": candidate, "rubric": rubric}
-            final_params = await self.before_tool_call(
-                "Scorer", role, "apply_scoring_rubric", tool_params
-            )
             loop = asyncio.get_event_loop()
             score = await loop.run_in_executor(
                 None, apply_scoring_rubric,
-                final_params["candidate"], final_params["rubric"]
+                candidate, approved_rubric,
             )
             all_scores.append(score)
-            rubric = final_params["rubric"]  # use approved rubric for remaining candidates
 
         all_scores.sort(key=lambda x: x["total_score"], reverse=True)
         self._emit("node.completed", agent_name="Scorer", tool_name="apply_scoring_rubric",

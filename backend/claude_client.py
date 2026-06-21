@@ -64,7 +64,9 @@ def call_structured(
                 "input_schema": tool_schema,
             }
         ],
-        tool_choice={"type": "tool", "name": tool_name},
+        # tool_choice is not allowed at all when thinking=True (Anthropic API constraint).
+        # Omit it when thinking — Claude still calls the only tool in the list.
+        **({} if thinking else {"tool_choice": {"type": "tool", "name": tool_name}}),
     )
 
     if thinking:

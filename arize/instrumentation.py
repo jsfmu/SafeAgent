@@ -41,7 +41,7 @@ def setup_tracing(project_name: str = "safe-agent") -> None:
         LangChainInstrumentor().instrument()
         AnthropicInstrumentor().instrument()
 
-        print(f"[Arize] Tracing → Phoenix at {endpoint}")
+        print(f"[Arize] Tracing -> Phoenix at {endpoint}")
         print(f"[Arize] View traces: http://localhost:6006  (project: {project_name})")
     except ImportError:
         print("[Arize] Phoenix not installed — traces disabled. Run: python arize/setup.py")

@@ -78,10 +78,10 @@ async def discover_agents(req: DiscoverRequest):
         except Exception:
             pass  # fall through to mock
 
-    return _mock_response(req.domain, query)
+    return _mock_response(req.domain, query, req.limit)
 
 
-def _mock_response(domain: str, query: str) -> DiscoverResponse:
+def _mock_response(domain: str, query: str, limit: int = 5) -> DiscoverResponse:
     domain_lower = domain.lower()
 
     if "hiring" in domain_lower or "recruit" in domain_lower or "hr" in domain_lower:
@@ -115,4 +115,4 @@ def _mock_response(domain: str, query: str) -> DiscoverResponse:
                             category="community", last_updated="2026-06-05T16:00:00Z"),
         ]
 
-    return DiscoverResponse(agents=agents, source="mock", query=query)
+    return DiscoverResponse(agents=agents[:limit], source="mock", query=query)
