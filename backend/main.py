@@ -16,6 +16,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
+
+# Windows ProactorEventLoop causes "semaphore timeout" errors on Redis TCP sockets.
+# Switch to SelectorEventLoop which uses select() and works correctly with redis-py.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import uuid
 from typing import AsyncGenerator
 
@@ -45,6 +51,7 @@ from scaffolder import scaffold
 from topology import propose_topologies
 from redis_client import init_redis, close_redis
 from routers import gate, pubsub, memory, audit, voice, asi
+from routers.gate import start_log_worker
 from code_export import generate_langgraph_code
 
 load_dotenv()
@@ -61,6 +68,7 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app):
     await init_redis()
+    start_log_worker()  # start background queue worker for gate audit logging
     yield
     await close_redis()
 
@@ -91,6 +99,9 @@ _session_blueprints: dict[str, dict] = {}
 
 @app.post("/classify")
 def classify_endpoint(req: ClassifyRequest):
+    if not req.description or not req.description.strip():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="description must not be empty")
     return classify(req).model_dump()
 
 
@@ -159,11 +170,13 @@ async def run_stream(run_id: str):
                     runner.event_queue.get(), timeout=30.0
                 )
                 _session_events.setdefault(runner.session_id, []).append(event)
-                yield {"data": event.model_dump_json(), "event": event.event_type}
+                # Omit the "event" key so the browser fires onmessage (generic "message" events).
+                # Named SSE events (event: run.completed) require addEventListener, not onmessage.
+                yield {"data": event.model_dump_json()}
                 if event.event_type in ("run.completed", "run.error"):
                     break
             except asyncio.TimeoutError:
-                yield {"data": json.dumps({"type": "heartbeat"}), "event": "heartbeat"}
+                yield {"data": json.dumps({"event_type": "heartbeat"})}
 
     return EventSourceResponse(event_generator())
 
@@ -226,10 +239,10 @@ def export_code(session_id: str):
 
 # ── Proof Panel ───────────────────────────────────────────────────────────────
 
-GATE_BASE = os.getenv("SAFETY_GATE_URL", "http://localhost:8000/gate/check").replace("/gate/check", "")
+GATE_BASE = os.getenv("SAFETY_GATE_URL", "http://localhost:8001/gate/check").replace("/gate/check", "")
 
 @app.get("/proof/{session_id}")
-async def proof_session(session_id: str, predicted_cost_usd: float = 0.09):
+async def proof_session(session_id: str, predicted_cost_usd: float = 0.0):
     """
     Merges Arize trace data (session_tracer) with Evan's Redis cache stats.
     Called by Utkarsh's frontend ProofPanel.

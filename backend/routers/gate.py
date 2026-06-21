@@ -11,6 +11,7 @@ Output contract matches Joseph's GateResponse exactly:
 """
 
 from __future__ import annotations
+import asyncio
 import json
 import time
 import hashlib
@@ -22,6 +23,31 @@ from redis_client import get_redis
 from models import GateRequest as GateInput, GateResponse as GateOutput, HumanOverride
 
 router = APIRouter()
+
+# Background log queue — serialises all Redis writes so they never compete for connections
+_log_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+_log_worker_task: asyncio.Task | None = None
+
+
+async def _log_worker() -> None:
+    """Drains _log_queue and writes audit entries to Redis one at a time."""
+    while True:
+        entry = await _log_queue.get()
+        try:
+            r = get_redis()
+            await r.xadd(entry["stream_key"], entry["fields"])
+            if "pub_payload" in entry:
+                await r.publish("safeagent:events", entry["pub_payload"])
+        except Exception:
+            pass
+        finally:
+            _log_queue.task_done()
+
+
+def start_log_worker(loop: asyncio.AbstractEventLoop | None = None) -> None:
+    global _log_worker_task
+    _log_worker_task = asyncio.ensure_future(_log_worker())
+
 
 # ── T1: hard-blocked tools and dangerous param values ─────────────────────────
 BLOCKED_TOOLS = {"bulk_delete", "send_to_all", "drop_table", "drop_db", "rm_rf"}
@@ -44,7 +70,7 @@ WARN_THRESHOLD = 70
 
 def t1_guardrails(inp: GateInput) -> GateOutput | None:
     """Hard block on known-dangerous tools/params. Returns BLOCK or None."""
-    if inp.tool_name in BLOCKED_TOOLS:
+    if inp.tool_name.strip() in BLOCKED_TOOLS:
         return GateOutput(
             decision="BLOCK",
             tier_triggered=1,
@@ -82,21 +108,27 @@ def _cache_key(inp: GateInput) -> str:
 
 
 async def t2_cache_lookup(inp: GateInput) -> GateOutput | None:
-    r = get_redis()
-    cached = await r.get(_cache_key(inp))
-    if cached:
-        data = json.loads(cached)
-        data["cache_hit"] = True
-        data["tier_triggered"] = 2
-        return GateOutput(**data)
+    try:
+        r = get_redis()
+        cached = await r.get(_cache_key(inp))
+        if cached:
+            data = json.loads(cached)
+            data["cache_hit"] = True
+            data["tier_triggered"] = 2
+            return GateOutput(**data)
+    except Exception:
+        pass  # cache miss on error — fall through to T3
     return None
 
 
 async def t2_cache_store(inp: GateInput, result: GateOutput) -> None:
-    r = get_redis()
-    payload = result.model_dump()
-    payload["cache_hit"] = False          # canonical value in cache
-    await r.set(_cache_key(inp), json.dumps(payload), ex=3600)
+    try:
+        r = get_redis()
+        payload = result.model_dump()
+        payload["cache_hit"] = False          # canonical value in cache
+        await r.set(_cache_key(inp), json.dumps(payload), ex=3600)
+    except Exception:
+        pass  # best-effort cache write
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,42 +167,50 @@ async def t3_claude_score(inp: GateInput) -> dict:
     )
     raw = msg.content[0].text.strip()
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
     except json.JSONDecodeError:
         clean = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
+        result = json.loads(clean)
+    # Attach real token usage so the proof panel can show actual Claude API costs
+    result["__tokens_in__"] = msg.usage.input_tokens
+    result["__tokens_out__"] = msg.usage.output_tokens
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Audit — every gate event logged to Redis Stream + published to Pub/Sub
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def log_to_stream(inp: GateInput, out: GateOutput) -> None:
-    r = get_redis()
-    await r.xadd(STREAM_KEY, {
-        "session_id":         inp.session_id,
-        "agent_name":         inp.agent_name,
-        "tool_name":          inp.tool_name,
-        "decision":           out.decision,
-        "tier_triggered":     str(out.tier_triggered),
-        "misalignment_score": str(out.misalignment_score or ""),
-        "oversight_score":    str(out.oversight_score or ""),
-        "explanation":        out.explanation,
-        "fix_draft":          out.fix_draft or "",
-        "cache_hit":          str(out.cache_hit),
-        "latency_ms":         str(out.latency_ms),
-        "timestamp":          str(time.time()),
-    })
-    # Real-time push to Utkarsh's frontend SSE
-    event = {
-        "event_type": "gate_result",
-        "agent_name": inp.agent_name,
-        "tool_name":  inp.tool_name,
-        "status":     out.decision,
-        "score":      out.misalignment_score,
-        "timestamp":  time.time(),
-    }
-    await r.publish("safeagent:events", json.dumps(event))
+def log_to_stream(inp: GateInput, out: GateOutput) -> None:
+    """Enqueue an audit entry. Synchronous/non-blocking — worker drains the queue."""
+    try:
+        _log_queue.put_nowait({
+            "stream_key": STREAM_KEY,
+            "fields": {
+                "session_id":         inp.session_id,
+                "agent_name":         inp.agent_name,
+                "tool_name":          inp.tool_name,
+                "decision":           out.decision,
+                "tier_triggered":     str(out.tier_triggered),
+                "misalignment_score": str(out.misalignment_score or ""),
+                "oversight_score":    str(out.oversight_score or ""),
+                "explanation":        out.explanation,
+                "fix_draft":          out.fix_draft or "",
+                "cache_hit":          str(out.cache_hit),
+                "latency_ms":         str(out.latency_ms),
+                "timestamp":          str(time.time()),
+            },
+            "pub_payload": json.dumps({
+                "event_type": "gate_result",
+                "agent_name": inp.agent_name,
+                "tool_name":  inp.tool_name,
+                "status":     out.decision,
+                "score":      out.misalignment_score,
+                "timestamp":  time.time(),
+            }),
+        })
+    except asyncio.QueueFull:
+        pass  # drop the log entry — gate decision is never affected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,14 +229,14 @@ async def gate_check(inp: GateInput) -> GateOutput:
     result = t1_guardrails(inp)
     if result:
         result.latency_ms = int((time.perf_counter() - t_start) * 1000)
-        await log_to_stream(inp, result)
+        log_to_stream(inp, result)
         return result
 
     # T2 — cache hit, ~5ms
     result = await t2_cache_lookup(inp)
     if result:
         result.latency_ms = int((time.perf_counter() - t_start) * 1000)
-        await log_to_stream(inp, result)
+        log_to_stream(inp, result)
         return result
 
     # T3 — Claude scoring, ~800ms
@@ -224,10 +264,12 @@ async def gate_check(inp: GateInput) -> GateOutput:
         fix_draft=fix,
         cache_hit=False,
         latency_ms=int((time.perf_counter() - t_start) * 1000),
+        tokens_in=scored.get("__tokens_in__", 0),
+        tokens_out=scored.get("__tokens_out__", 0),
     )
 
     await t2_cache_store(inp, result)
-    await log_to_stream(inp, result)
+    log_to_stream(inp, result)
     return result
 
 
@@ -238,31 +280,44 @@ async def human_override(override: HumanOverride):
     Note: Joseph's actual HITL flow goes through his own /run/decide endpoint —
     this is for Evan's audit trail only.
     """
-    r = get_redis()
-    await r.xadd(STREAM_KEY, {
-        "event_type":    "human_override",
-        "session_id":    override.session_id,
-        "agent_name":    override.agent_name,
-        "tool_name":     override.tool_name,
-        "decision":      override.decision,
-        "timestamp":     str(time.time()),
-    })
-    # Pub/Sub push
-    await r.publish("safeagent:events", json.dumps({
-        "event_type": "human_override",
-        "agent_name": override.agent_name,
-        "tool_name":  override.tool_name,
-        "status":     override.decision,
-        "timestamp":  time.time(),
-    }))
-    # Persist to agent memory
-    mem_key = f"{MEM_PREFIX}{override.session_id}:{override.agent_name}"
-    await r.hset(mem_key, mapping={
-        "last_override_tool":     override.tool_name,
-        "last_override_decision": override.decision,
-        "last_override_ts":       str(time.time()),
-    })
-    await r.expire(mem_key, 86400)
+    # Best-effort stream logging (fire-and-forget)
+    async def _log_override():
+        try:
+            r = get_redis()
+            await r.xadd(STREAM_KEY, {
+                "event_type":    "human_override",
+                "session_id":    override.session_id,
+                "agent_name":    override.agent_name,
+                "tool_name":     override.tool_name,
+                "decision":      override.decision,
+                "timestamp":     str(time.time()),
+            })
+            await r.publish("safeagent:events", json.dumps({
+                "event_type": "human_override",
+                "agent_name": override.agent_name,
+                "tool_name":  override.tool_name,
+                "status":     override.decision,
+                "timestamp":  time.time(),
+            }))
+        except Exception:
+            pass
+    asyncio.create_task(_log_override())
+
+    # Persist to agent memory — separate try so stream failure doesn't block this
+    try:
+        r = get_redis()
+        mem_key = f"{MEM_PREFIX}{override.session_id}:{override.agent_name}"
+        existing_raw = await r.get(mem_key)
+        existing: dict = json.loads(existing_raw) if existing_raw else {}
+        existing.update({
+            "last_override_tool":     override.tool_name,
+            "last_override_decision": override.decision,
+            "last_override_ts":       str(time.time()),
+        })
+        await r.set(mem_key, json.dumps(existing), ex=86400)
+    except Exception:
+        pass
+
     return {"status": "logged", "decision": override.decision}
 
 
